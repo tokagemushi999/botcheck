@@ -308,13 +308,17 @@ class TestAnalysisEngine:
         with patch.object(engine, 'timing_analyzer') as mock_timing, \
              patch.object(engine, 'style_analyzer') as mock_style, \
              patch.object(engine, 'behavior_analyzer') as mock_behavior, \
-             patch.object(engine, 'ai_detector') as mock_ai:
+             patch.object(engine, 'ai_detector') as mock_ai, \
+             patch.object(engine, 'profile_analyzer') as mock_profile, \
+             patch.object(engine, 'network_analyzer') as mock_network:
             
             # モックの戻り値設定
             mock_timing.analyze_timing.return_value = 75
             mock_style.analyze_style.return_value = 60
             mock_behavior.analyze_behavior.return_value = 85
             mock_ai.detect_ai_text.return_value = 70
+            mock_profile.analyze_profile.return_value = 65
+            mock_network.analyze_network.return_value = 55
             
             messages = [Mock()]
             messages[0].id = 9000
@@ -329,7 +333,14 @@ class TestAnalysisEngine:
             mock_style.analyze_style.assert_called_once()
             mock_behavior.analyze_behavior.assert_called_once()
             mock_ai.detect_ai_text.assert_called_once()
+            mock_profile.analyze_profile.assert_called_once()
+            mock_network.analyze_network.assert_called_once()
             
-            # スコアが正しく統合されているか（均等重み付けの場合）
-            expected_total = (75 + 60 + 85 + 70) / 4
-            assert abs(result['total_score'] - expected_total) < 1
+            # スコアが正しく統合されているか（重み付け合計）
+            w = engine.weights
+            total_w = sum(w.values())
+            expected_total = (
+                75 * w["timing"] + 60 * w["style"] + 85 * w["behavior"]
+                + 70 * w["ai"] + 65 * w["profile"] + 55 * w["network"]
+            ) / total_w
+            assert abs(result['total_score'] - round(expected_total, 2)) < 1

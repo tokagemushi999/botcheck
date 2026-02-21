@@ -9,24 +9,34 @@ from analyzer.timing import TimingAnalyzer
 from analyzer.style import StyleAnalyzer
 from analyzer.behavior import BehaviorAnalyzer
 from analyzer.ai_detect import AIDetector
+from analyzer.profile import ProfileAnalyzer
+from analyzer.network import NetworkAnalyzer
 
 
 class AnalysisEngine:
-    """4軸分析を統合するメインエンジン"""
+    """6軸分析を統合するメインエンジン"""
 
     def __init__(self, weights: dict[str, float] | None = None):
         self.timing_analyzer = TimingAnalyzer()
         self.style_analyzer = StyleAnalyzer()
         self.behavior_analyzer = BehaviorAnalyzer()
         self.ai_detector = AIDetector()
+        self.profile_analyzer = ProfileAnalyzer()
+        self.network_analyzer = NetworkAnalyzer()
         self.weights = weights or {
-            "timing": 0.25,
-            "style": 0.25,
-            "behavior": 0.25,
-            "ai": 0.25,
+            "timing": 0.20,
+            "style": 0.20,
+            "behavior": 0.20,
+            "ai": 0.15,
+            "profile": 0.15,
+            "network": 0.10,
         }
 
-    def analyze_user(self, messages: list[Any]) -> dict[str, Any]:
+    def analyze_user(
+        self,
+        messages: list[Any],
+        user_info: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """ユーザーのメッセージを分析してスコアを返す"""
         count = len(messages)
 
@@ -38,6 +48,8 @@ class AnalysisEngine:
         style_score = self.style_analyzer.analyze_style(messages)
         behavior_score = self.behavior_analyzer.analyze_behavior(messages)
         ai_score = self.ai_detector.detect_ai_text(messages)
+        profile_score = self.profile_analyzer.analyze_profile(user_info or {})
+        network_score = self.network_analyzer.analyze_network(messages)
 
         # 重み付き合計
         w = self.weights
@@ -46,10 +58,12 @@ class AnalysisEngine:
             total = 1.0
 
         total_score = (
-            timing_score * w.get("timing", 0.25)
-            + style_score * w.get("style", 0.25)
-            + behavior_score * w.get("behavior", 0.25)
-            + ai_score * w.get("ai", 0.25)
+            timing_score * w.get("timing", 0.20)
+            + style_score * w.get("style", 0.20)
+            + behavior_score * w.get("behavior", 0.20)
+            + ai_score * w.get("ai", 0.15)
+            + profile_score * w.get("profile", 0.15)
+            + network_score * w.get("network", 0.10)
         ) / total
 
         total_score = _clamp(total_score)
@@ -80,6 +94,8 @@ class AnalysisEngine:
             "style_score": round(style_score, 2),
             "behavior_score": round(behavior_score, 2),
             "ai_score": round(ai_score, 2),
+            "profile_score": round(profile_score, 2),
+            "network_score": round(network_score, 2),
             "confidence": round(confidence, 2),
             "message_count": count,
             "user_id": user_id,
@@ -94,6 +110,8 @@ class AnalysisEngine:
             "style_score": 50,
             "behavior_score": 50,
             "ai_score": 50,
+            "profile_score": 50,
+            "network_score": 50,
             "confidence": 0,
             "message_count": 0,
             "user_id": None,
@@ -145,6 +163,8 @@ def analyze_messages(messages: list[dict[str, Any]], weights: dict[str, float] |
         style_score=result["style_score"],
         behavior_score=result["behavior_score"],
         ai_score=result["ai_score"],
+        profile_score=result["profile_score"],
+        network_score=result["network_score"],
         confidence=result["confidence"],
         message_count=result["message_count"],
         details={},
