@@ -9,10 +9,11 @@ Discordサーバーに導入できるBot/AI投稿検知ツール。
 - コミュニティモデレーター
 
 ## 技術スタック
-- Discord Bot: discord.js v14 (Node.js)
+- Discord Bot: discord.py (Python)
 - 分析エンジン: Python (FastAPI)
-- DB: SQLite
+- DB: SQLite (aiosqlite)
 - フロント: なし（MVP）
+- 全Python統一構成（Node.js依存なし）
 
 ## コア機能（MVP）
 

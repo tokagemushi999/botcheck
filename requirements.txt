@@ -1,0 +1,7 @@
+# BotCheck — Python dependencies
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.8.0
+python-dotenv>=1.0.1
+aiosqlite>=0.20.0
+discord.py>=2.4.0
