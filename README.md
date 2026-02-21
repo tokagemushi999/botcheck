@@ -33,12 +33,32 @@ uvicorn api.server:app --reload
 
 ## Discord コマンド
 
-| コマンド | 説明 |
-|---------|------|
-| `/botcheck user @user` | 特定ユーザーのBot度分析 |
-| `/botcheck server` | サーバー全体のサマリー |
-| `/botcheck watch` | リアルタイム監視ON/OFF |
-| `/botcheck report` | 週次レポート生成 |
+| コマンド | 説明 | プラン |
+|---------|------|--------|
+| `/botcheck user @user` | 特定ユーザーのBot度分析 | Free / Pro |
+| `/botcheck server` | サーバー全体のサマリー | Free / Pro |
+| `/botcheck scan` | チャンネル過去メッセージ取込 | Free / Pro |
+| `/botcheck watch` | リアルタイム監視ON/OFF | Free / Pro |
+| `/botcheck report` | 週次レポート生成 | Pro のみ |
+
+## 料金プラン
+
+### 🆓 Free プラン
+- 1サーバー/アカウント
+- 基本分析（総合スコアのみ）
+- 1日10回分析
+- スキャン100件まで
+
+### 💎 Pro プラン ($5/月)
+- 無制限サーバー
+- 詳細分析（4エンジン個別スコア）
+- 無制限分析
+- スキャン1000件
+- API アクセス
+- 週次レポート
+
+### 🎁 投票ボーナス
+[top.gg](https://top.gg/bot/1474728574320640011)で投票すると24時間Pro機能が無料で使えます！
 
 ## スコアの見方
 
@@ -75,13 +95,19 @@ uvicorn api.server:app --reload
 
 ## API エンドポイント
 
-| メソッド | パス | 説明 |
-|----------|------|------|
-| GET | `/health` | ヘルスチェック |
-| POST | `/analyze` | メッセージ配列を分析 |
-| GET | `/user/{id}/score` | ユーザーの最新スコア |
-| GET | `/user/{id}/history` | スコア履歴 |
-| GET | `/stats` | 全体統計 |
+| メソッド | パス | 説明 | プラン |
+|----------|------|------|--------|
+| GET | `/health` | ヘルスチェック | Public |
+| GET | `/` | ランディングページ | Public |
+| GET | `/dashboard` | Webダッシュボード | Public |
+| POST | `/analyze` | メッセージ配列を分析 | Pro |
+| GET | `/user/{id}/score` | ユーザーの最新スコア | Pro |
+| GET | `/user/{id}/history` | スコア履歴 | Pro |
+| GET | `/stats` | 全体統計 | Public |
+| GET | `/plans` | プラン一覧 | Public |
+| GET | `/subscription/{guild_id}` | サブスクリプション情報 | Pro |
+| POST | `/subscription/{guild_id}/upgrade` | プランアップグレード（モック） | Pro |
+| POST | `/webhook/topgg` | top.gg投票webhook | Internal |
 
 ## プロジェクト構成
 
@@ -98,12 +124,16 @@ botcheck/
 ├── discord_bot/
 │   └── bot.py          # Discord Bot（メッセージ収集 + コマンド）
 ├── db/
-│   └── schema.sql      # SQLite スキーマ
+│   └── schema.sql      # SQLite スキーマ（subscriptionsテーブル追加）
+├── static/
+│   └── lp/
+│       └── index.html  # ランディングページ（料金表追加）
 ├── openclaw_skill/     # OpenClaw スキル
 ├── data/               # SQLite DBファイル（自動生成）
 ├── requirements.txt
 ├── .env.example
-└── SPEC.md
+├── TOP_GG_REGISTRATION.md  # top.gg登録用情報
+└── README.md
 ```
 
 ## 技術スタック

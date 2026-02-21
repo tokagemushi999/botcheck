@@ -26,6 +26,19 @@ API_URL = os.getenv("BOTCHECK_API_URL", "http://localhost:8000")
 ALERT_THRESHOLD = float(os.getenv("BOTCHECK_ALERT_THRESHOLD", "80"))
 MIN_MESSAGES = int(os.getenv("BOTCHECK_MIN_MESSAGES", "20"))
 
+# フリーミアムプランの制限
+FREE_LIMITS = {
+    "max_servers_per_owner": 1,
+    "max_analyses_per_day": 10,
+    "scan_limit": 100,  # チャンネルスキャン時のメッセージ上限
+}
+
+PRO_LIMITS = {
+    "max_servers_per_owner": 999999,  # 実質無制限
+    "max_analyses_per_day": 999999,   # 実質無制限
+    "scan_limit": 1000,
+}
+
 logger = logging.getLogger("botcheck")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -63,6 +76,112 @@ class BotCheckBot(commands.Bot):
 
 
 bot = BotCheckBot()
+
+
+# ---------------------------------------------------------------------------
+# プラン管理ヘルパー関数
+# ---------------------------------------------------------------------------
+async def check_plan(guild_id: str, db: aiosqlite.Connection) -> tuple[str, dict]:
+    """
+    ギルドのプラン情報を取得
+    Returns: (plan_name, limits_dict)
+    """
+    now = int(time.time())
+    
+    # サブスクリプション情報を取得
+    row = await db.execute_fetchall(
+        """SELECT plan, expires_at, vote_bonus_expires_at 
+           FROM subscriptions WHERE guild_id = ?""",
+        (guild_id,)
+    )
+    
+    if not row:
+        # 初回はフリープランで作成
+        await db.execute(
+            "INSERT OR IGNORE INTO subscriptions (guild_id, plan) VALUES (?, 'free')",
+            (guild_id,)
+        )
+        await db.commit()
+        return 'free', FREE_LIMITS
+    
+    plan, expires_at, vote_bonus_expires_at = row[0]
+    
+    # 期限切れチェック
+    if plan == 'pro' and expires_at and expires_at < now:
+        await db.execute(
+            "UPDATE subscriptions SET plan = 'free' WHERE guild_id = ?",
+            (guild_id,)
+        )
+        await db.commit()
+        plan = 'free'
+    
+    # top.gg投票ボーナスチェック（Pro機能を一時的に開放）
+    if plan == 'free' and vote_bonus_expires_at and vote_bonus_expires_at > now:
+        return 'vote_bonus', PRO_LIMITS
+    
+    return plan, PRO_LIMITS if plan == 'pro' else FREE_LIMITS
+
+
+async def check_daily_usage(guild_id: str, db: aiosqlite.Connection) -> int:
+    """今日の分析実行回数を取得"""
+    today_start = int(time.time()) - (int(time.time()) % 86400)
+    
+    row = await db.execute_fetchall(
+        "SELECT COUNT(*) FROM scores WHERE guild_id = ? AND analyzed_at >= ?",
+        (guild_id, today_start)
+    )
+    return row[0][0] if row else 0
+
+
+async def check_server_owner_limits(user_id: str, guild_id: str, db: aiosqlite.Connection) -> bool:
+    """
+    フリープランユーザーが複数サーバーで使用していないかチェック
+    Returns: True if allowed, False if over limit
+    """
+    # 現在のユーザーが所有者のサーバー数を確認
+    guilds = [g for g in bot.guilds if g.owner_id == int(user_id)]
+    free_server_count = 0
+    
+    for guild in guilds:
+        plan, _ = await check_plan(str(guild.id), db)
+        if plan == 'free':
+            free_server_count += 1
+    
+    return free_server_count <= 1
+
+
+def create_upgrade_embed(feature_name: str) -> discord.Embed:
+    """アップグレード案内のEmbedを作成"""
+    embed = discord.Embed(
+        title="🚀 BotCheck Pro が必要です",
+        description=f"**{feature_name}**はProプランでご利用いただけます。",
+        color=discord.Color.gold()
+    )
+    embed.add_field(
+        name="🆓 Free vs 💎 Pro",
+        value=(
+            "**Free**\n"
+            "• 1サーバー/アカウント\n"
+            "• 基本分析（総合スコアのみ）\n"
+            "• 1日10回分析\n"
+            "• スキャン100件まで\n\n"
+            "**Pro ($5/月)**\n"
+            "• 無制限サーバー\n"
+            "• 詳細分析（4エンジン個別）\n"
+            "• 無制限分析\n"
+            "• スキャン1000件\n"
+            "• APIアクセス\n"
+            "• 週次レポート"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🎁 無料でProを試すには",
+        value="[top.gg](https://top.gg/bot/1474728574320640011)で投票すると24時間Pro機能が使えます！",
+        inline=False
+    )
+    embed.set_footer(text="アップグレードは近日対応予定です")
+    return embed
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +277,36 @@ async def on_guild_join(guild: discord.Guild):
     """ギルド参加時に全チャンネルの過去メッセージを自動スキャン"""
     logger.info(f"新しいギルドに参加: {guild.name} (ID: {guild.id})")
 
+    # フリープランの複数サーバー制限チェック
+    if guild.owner_id:
+        owner_allowed = await check_server_owner_limits(str(guild.owner_id), str(guild.id), bot.db)
+        if not owner_allowed:
+            # 制限に引っかかった場合、オーナーにDMして退出
+            try:
+                owner = await bot.fetch_user(guild.owner_id)
+                embed = discord.Embed(
+                    title="🚫 BotCheck: 複数サーバー制限",
+                    description=f"**{guild.name}**へのBotCheck追加をブロックしました。",
+                    color=discord.Color.red()
+                )
+                embed.add_field(
+                    name="制限理由",
+                    value="Freeプランでは1アカウントにつき1サーバーまでご利用いただけます。",
+                    inline=False
+                )
+                embed.add_field(
+                    name="解決方法",
+                    value="• 既存サーバーからBotCheckを削除\n• または[top.gg投票](https://top.gg/bot/1474728574320640011)で24時間Pro機能を試用\n• Proプランへのアップグレード（近日対応）",
+                    inline=False
+                )
+                await owner.send(embed=embed)
+            except Exception as e:
+                logger.warning(f"制限通知DM送信失敗: {e}")
+            
+            await guild.leave()
+            logger.info(f"フリープラン制限によりギルド {guild.name} から退出")
+            return
+
     # システムチャンネルを探す
     system_channel = guild.system_channel
     progress_channel = system_channel if system_channel and system_channel.permissions_for(guild.me).send_messages else None
@@ -252,8 +401,12 @@ async def _scan_guild_channel(channel: discord.TextChannel, guild_id: str, db: a
     count = 0
     now = int(time.time())
     
+    # プランに応じてスキャン制限を適用
+    plan, limits = await check_plan(guild_id, db)
+    actual_limit = min(limit, limits["scan_limit"])
+    
     try:
-        async for message in channel.history(limit=limit):
+        async for message in channel.history(limit=actual_limit):
             if message.author.bot:
                 continue
 
@@ -346,6 +499,17 @@ class BotCheckCog(commands.Cog):
         user_id = str(member.id)
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
 
+        # プランチェック
+        plan, limits = await check_plan(guild_id, self.db)
+        
+        # 日次利用制限チェック
+        daily_usage = await check_daily_usage(guild_id, self.db)
+        if daily_usage >= limits["max_analyses_per_day"]:
+            embed = create_upgrade_embed("1日の分析回数制限に達しました")
+            embed.add_field(name="現在の使用状況", value=f"{daily_usage}/{limits['max_analyses_per_day']} 回", inline=False)
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
         # DBからメッセージ取得
         rows = await self.db.execute_fetchall(
             """SELECT content, content_length, mention_count, emoji_count,
@@ -410,14 +574,32 @@ class BotCheckCog(commands.Cog):
             description=verdict,
             color=color,
         )
-        embed.add_field(name="総合スコア", value=f"**{result.total_score}** / 100", inline=False)
-        embed.add_field(name="⏱ タイミング", value=f"{result.timing_score}", inline=True)
-        embed.add_field(name="✍️ 文体", value=f"{result.style_score}", inline=True)
-        embed.add_field(name="🔄 行動", value=f"{result.behavior_score}", inline=True)
-        embed.add_field(name="🤖 AI検知", value=f"{result.ai_score}", inline=True)
-        embed.add_field(name="信頼度", value=f"{result.confidence}%", inline=True)
-        embed.add_field(name="分析件数", value=f"{result.message_count} 件", inline=True)
-        embed.set_footer(text="スコアが高いほどBot/AIの可能性が高い")
+
+        # プランに応じた表示内容を変更
+        if plan in ['pro', 'vote_bonus']:
+            # Proプラン: 詳細分析表示
+            embed.add_field(name="総合スコア", value=f"**{result.total_score}** / 100", inline=False)
+            embed.add_field(name="⏱ タイミング", value=f"{result.timing_score}", inline=True)
+            embed.add_field(name="✍️ 文体", value=f"{result.style_score}", inline=True)
+            embed.add_field(name="🔄 行動", value=f"{result.behavior_score}", inline=True)
+            embed.add_field(name="🤖 AI検知", value=f"{result.ai_score}", inline=True)
+            embed.add_field(name="信頼度", value=f"{result.confidence}%", inline=True)
+            embed.add_field(name="分析件数", value=f"{result.message_count} 件", inline=True)
+            
+            if plan == 'vote_bonus':
+                embed.set_footer(text="🎁 top.gg投票ボーナス中 | スコアが高いほどBot/AIの可能性が高い")
+            else:
+                embed.set_footer(text="💎 Pro | スコアが高いほどBot/AIの可能性が高い")
+        else:
+            # フリープラン: 基本分析のみ
+            embed.add_field(name="総合スコア", value=f"**{result.total_score}** / 100", inline=False)
+            embed.add_field(name="分析件数", value=f"{result.message_count} 件", inline=True)
+            embed.add_field(
+                name="💎 Pro で詳細を見る",
+                value="4エンジン個別スコア（タイミング・文体・行動・AI検知）",
+                inline=False
+            )
+            embed.set_footer(text="🆓 Free | より詳しい分析はProプランで")
 
         await interaction.followup.send(embed=embed)
 
@@ -435,11 +617,16 @@ class BotCheckCog(commands.Cog):
             return
 
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        
+        # プランチェック
+        plan, limits = await check_plan(guild_id, self.db)
+        scan_limit = limits["scan_limit"]
+
         count = 0
         user_set = set()
         now = int(time.time())
 
-        async for message in channel.history(limit=1000):
+        async for message in channel.history(limit=scan_limit):
             if message.author.bot:
                 continue
 
@@ -479,12 +666,20 @@ class BotCheckCog(commands.Cog):
 
         await self.db.commit()
 
-        await interaction.followup.send(
+        # プランに応じたメッセージ表示
+        result_msg = (
             f"✅ スキャン完了！\n"
             f"📨 **{count}** 件のメッセージを取り込みました\n"
             f"👤 **{len(user_set)}** 人のユーザーを検出\n"
             f"📢 チャンネル: #{channel.name}"
         )
+
+        if plan == 'free' and count >= FREE_LIMITS["scan_limit"]:
+            result_msg += f"\n\n⚠️ Freeプランは{FREE_LIMITS['scan_limit']}件まで。Proなら{PRO_LIMITS['scan_limit']}件まで取込可能！"
+        elif plan == 'vote_bonus':
+            result_msg += f"\n\n🎁 top.gg投票ボーナス中（{PRO_LIMITS['scan_limit']}件まで取込）"
+
+        await interaction.followup.send(result_msg)
 
     async def _server_summary(self, interaction: discord.Interaction):
         """サーバー全体のサマリー"""
@@ -569,6 +764,19 @@ class BotCheckCog(commands.Cog):
         await interaction.response.defer(thinking=True)
 
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        
+        # プランチェック
+        plan, limits = await check_plan(guild_id, self.db)
+        if plan == 'free':
+            embed = create_upgrade_embed("週次レポート機能")
+            embed.add_field(
+                name="💎 Pro限定機能",
+                value="週次レポートは詳細な統計情報を提供するPro限定機能です。",
+                inline=False
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
         week_ago = int(time.time()) - 7 * 86400
 
         rows = await self.db.execute_fetchall(
@@ -603,6 +811,11 @@ class BotCheckCog(commands.Cog):
                 icon = "🚨" if r[2] >= 80 else "⚠️" if r[2] >= 60 else "✅"
                 lines.append(f"{icon} **{r[1] or 'unknown'}** — 平均 {r[2]:.1f} ({r[3]}回分析)")
             embed.add_field(name="ユーザー別", value="\n".join(lines), inline=False)
+
+        if plan == 'vote_bonus':
+            embed.set_footer(text="🎁 top.gg投票ボーナス中")
+        else:
+            embed.set_footer(text="💎 Pro")
 
         await interaction.followup.send(embed=embed)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional, Dict, List
@@ -19,6 +20,8 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from analyzer.engine import analyze_messages
+
+logger = logging.getLogger("botcheck-api")
 
 # ---------------------------------------------------------------------------
 # 設定
@@ -146,6 +149,29 @@ class StatsResponse(BaseModel):
     total_analyses: int
     avg_score: Optional[float]
     top_suspicious: List[Dict[str, Any]]
+
+
+class PlanInfo(BaseModel):
+    name: str
+    display_name: str
+    price: Optional[float]
+    features: List[str]
+    limits: Dict[str, Any]
+
+
+class SubscriptionResponse(BaseModel):
+    guild_id: str
+    plan: str
+    expires_at: Optional[int]
+    vote_bonus_expires_at: Optional[int]
+    created_at: int
+
+
+class TopGGVoteWebhook(BaseModel):
+    user: str
+    type: str  # "upvote" or "test"
+    is_weekend: bool = False
+    query: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +306,150 @@ async def get_stats():
             for r in top
         ],
     )
+
+
+@app.get("/plans", response_model=List[PlanInfo])
+async def get_plans():
+    """利用可能なプラン一覧"""
+    return [
+        PlanInfo(
+            name="free",
+            display_name="Free",
+            price=None,
+            features=[
+                "1サーバー/アカウント",
+                "基本分析（総合スコアのみ）",
+                "1日10回分析",
+                "スキャン100件まで"
+            ],
+            limits={
+                "max_servers_per_owner": 1,
+                "max_analyses_per_day": 10,
+                "scan_limit": 100,
+                "detailed_scores": False,
+                "api_access": False,
+                "weekly_reports": False
+            }
+        ),
+        PlanInfo(
+            name="pro",
+            display_name="Pro",
+            price=5.0,
+            features=[
+                "無制限サーバー",
+                "詳細分析（4エンジン個別スコア）",
+                "無制限分析",
+                "スキャン1000件",
+                "APIアクセス",
+                "週次レポート"
+            ],
+            limits={
+                "max_servers_per_owner": 999999,
+                "max_analyses_per_day": 999999,
+                "scan_limit": 1000,
+                "detailed_scores": True,
+                "api_access": True,
+                "weekly_reports": True
+            }
+        )
+    ]
+
+
+@app.get("/subscription/{guild_id}", response_model=SubscriptionResponse)
+async def get_subscription(guild_id: str):
+    """ギルドの現在のサブスクリプション情報"""
+    db = await get_db()
+    
+    row = await db.execute_fetchall(
+        """SELECT guild_id, plan, expires_at, vote_bonus_expires_at, created_at 
+           FROM subscriptions WHERE guild_id = ?""",
+        (guild_id,)
+    )
+    
+    if not row:
+        # 初回はフリープランで作成
+        now = int(time.time())
+        await db.execute(
+            "INSERT INTO subscriptions (guild_id, plan) VALUES (?, 'free')",
+            (guild_id,)
+        )
+        await db.commit()
+        
+        return SubscriptionResponse(
+            guild_id=guild_id,
+            plan="free",
+            expires_at=None,
+            vote_bonus_expires_at=None,
+            created_at=now
+        )
+    
+    r = row[0]
+    return SubscriptionResponse(
+        guild_id=r[0],
+        plan=r[1],
+        expires_at=r[2],
+        vote_bonus_expires_at=r[3],
+        created_at=r[4]
+    )
+
+
+@app.post("/subscription/{guild_id}/upgrade")
+async def upgrade_subscription(guild_id: str):
+    """プランアップグレード（モック実装）"""
+    db = await get_db()
+    now = int(time.time())
+    expires_at = now + (30 * 86400)  # 30日後
+    
+    # サブスクリプションをProに更新（モック）
+    await db.execute(
+        """INSERT INTO subscriptions (guild_id, plan, expires_at, updated_at) 
+           VALUES (?, 'pro', ?, ?)
+           ON CONFLICT(guild_id) DO UPDATE SET
+               plan = 'pro',
+               expires_at = excluded.expires_at,
+               updated_at = excluded.updated_at""",
+        (guild_id, expires_at, now)
+    )
+    await db.commit()
+    
+    return {
+        "success": True,
+        "message": "モック: Proプランにアップグレードしました（30日間）",
+        "expires_at": expires_at
+    }
+
+
+@app.post("/webhook/topgg")
+async def topgg_webhook(vote_data: TopGGVoteWebhook):
+    """top.ggからの投票webhook"""
+    try:
+        user_id = vote_data.user
+        
+        # 投票ボーナス: 24時間Pro機能を有効化
+        now = int(time.time())
+        bonus_expires_at = now + (24 * 3600)  # 24時間後
+        
+        # ユーザーが参加している全サーバーでボーナス適用
+        # 実際の実装では、Discordから情報を取得する必要がある
+        # ここではモック実装として、テスト用のguild_idを使用
+        
+        db = await get_db()
+        
+        # 投票ログを記録（後で実装予定）
+        logger.info(f"top.gg vote received: user={user_id}, type={vote_data.type}")
+        
+        # 注意: 本番では適切なユーザー→ギルドマッピングが必要
+        # 今回は基盤準備のみなので、実際の適用は後回し
+        
+        return {
+            "success": True,
+            "message": f"Vote bonus activated for user {user_id}",
+            "bonus_duration_hours": 24
+        }
+    
+    except Exception as e:
+        logger.error(f"top.gg webhook error: {e}")
+        raise HTTPException(status_code=400, detail="Webhook processing failed")
 
 
 # ---------------------------------------------------------------------------

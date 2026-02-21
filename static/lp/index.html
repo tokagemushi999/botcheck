@@ -261,6 +261,140 @@
             font-family: 'SF Mono', 'Consolas', monospace;
         }
 
+        /* Pricing */
+        .pricing-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 32px;
+            max-width: 640px;
+            margin: 0 auto 64px;
+        }
+
+        .pricing-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 32px;
+            position: relative;
+            transition: border-color 0.15s;
+        }
+
+        .pricing-card:hover {
+            border-color: #333;
+        }
+
+        .pricing-card.featured {
+            border-color: #fff;
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .plan-badge {
+            position: absolute;
+            top: -12px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #fff;
+            color: #000;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 4px 12px;
+            border-radius: 16px;
+        }
+
+        .plan-header {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+
+        .plan-header h3 {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--accent);
+            margin-bottom: 8px;
+        }
+
+        .plan-price {
+            font-size: 48px;
+            font-weight: 700;
+            color: var(--accent);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .plan-period {
+            font-size: 14px;
+            color: var(--muted);
+        }
+
+        .plan-features {
+            margin-bottom: 32px;
+        }
+
+        .feature-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 8px 0;
+            font-size: 14px;
+        }
+
+        .check {
+            color: #4ade80;
+            font-weight: 600;
+        }
+
+        .plan-btn {
+            width: 100%;
+            justify-content: center;
+        }
+
+        .coming-soon {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--muted);
+            cursor: default;
+        }
+
+        .coming-soon:hover {
+            background: var(--surface);
+            border-color: var(--border);
+        }
+
+        .vote-bonus {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+            margin-top: 48px;
+        }
+
+        .vote-bonus-content {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .vote-bonus-icon {
+            font-size: 32px;
+        }
+
+        .vote-bonus-text h4 {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--accent);
+            margin-bottom: 4px;
+        }
+
+        .vote-bonus-text p {
+            font-size: 14px;
+            color: var(--muted);
+            margin: 0;
+        }
+
+        .vote-bonus-text a {
+            color: var(--accent);
+            text-decoration: underline;
+        }
+
         /* CTA bottom */
         .cta-section {
             padding: 120px 0;
@@ -306,6 +440,8 @@
         /* Responsive */
         @media (max-width: 768px) {
             .features-grid { grid-template-columns: 1fr; }
+            .pricing-grid { grid-template-columns: 1fr; gap: 24px; }
+            .vote-bonus-content { flex-direction: column; text-align: center; gap: 16px; }
             .stats { gap: 32px; flex-wrap: wrap; }
             .nav-links { display: none; }
             .step { grid-template-columns: 36px 1fr; gap: 16px; }
@@ -320,6 +456,7 @@
                 <div class="wordmark">BotCheck</div>
                 <div class="nav-links">
                     <a href="#features">Features</a>
+                    <a href="#pricing">Pricing</a>
                     <a href="#how">Setup</a>
                     <a href="/dashboard">Dashboard</a>
                     <a href="https://github.com/tokagemushi999/botcheck" target="_blank">GitHub</a>
@@ -423,6 +560,90 @@
                         <h3>分析開始</h3>
                         <p><code>/botcheck user</code> でユーザー分析、<code>/botcheck server</code> でサーバー全体を確認。</p>
                     </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="pricing" class="features">
+        <div class="container">
+            <div class="section-label">Pricing</div>
+            <h2 class="section-title">シンプルな料金体系</h2>
+            
+            <div class="pricing-grid">
+                <div class="pricing-card">
+                    <div class="plan-header">
+                        <h3>Free</h3>
+                        <div class="plan-price">$0</div>
+                        <div class="plan-period">永久無料</div>
+                    </div>
+                    <div class="plan-features">
+                        <div class="feature-item">
+                            <span class="check">✓</span>
+                            1サーバー/アカウント
+                        </div>
+                        <div class="feature-item">
+                            <span class="check">✓</span>
+                            基本分析（総合スコアのみ）
+                        </div>
+                        <div class="feature-item">
+                            <span class="check">✓</span>
+                            1日10回分析
+                        </div>
+                        <div class="feature-item">
+                            <span class="check">✓</span>
+                            スキャン100件まで
+                        </div>
+                    </div>
+                    <a href="https://discord.com/oauth2/authorize?client_id=1474728574320640011&permissions=2147559424&scope=bot+applications.commands"
+                       class="btn btn-secondary plan-btn" target="_blank">今すぐ始める</a>
+                </div>
+
+                <div class="pricing-card featured">
+                    <div class="plan-badge">おすすめ</div>
+                    <div class="plan-header">
+                        <h3>Pro</h3>
+                        <div class="plan-price">$5</div>
+                        <div class="plan-period">月額</div>
+                    </div>
+                    <div class="plan-features">
+                        <div class="feature-item">
+                            <span class="check">✓</span>
+                            無制限サーバー
+                        </div>
+                        <div class="feature-item">
+                            <span class="check">✓</span>
+                            詳細分析（4エンジン個別）
+                        </div>
+                        <div class="feature-item">
+                            <span class="check">✓</span>
+                            無制限分析
+                        </div>
+                        <div class="feature-item">
+                            <span class="check">✓</span>
+                            スキャン1000件
+                        </div>
+                        <div class="feature-item">
+                            <span class="check">✓</span>
+                            APIアクセス
+                        </div>
+                        <div class="feature-item">
+                            <span class="check">✓</span>
+                            週次レポート
+                        </div>
+                    </div>
+                    <div class="btn btn-primary plan-btn coming-soon">Coming Soon</div>
+                </div>
+            </div>
+
+            <div class="vote-bonus">
+                <div class="vote-bonus-content">
+                    <div class="vote-bonus-icon">🎁</div>
+                    <div class="vote-bonus-text">
+                        <h4>無料でProを試そう！</h4>
+                        <p><a href="https://top.gg/bot/1474728574320640011" target="_blank">top.gg</a>で投票するとPro機能が24時間無料で使えます</p>
+                    </div>
+                    <a href="https://top.gg/bot/1474728574320640011" class="btn btn-secondary" target="_blank">投票する</a>
                 </div>
             </div>
         </div>
