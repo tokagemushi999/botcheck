@@ -72,6 +72,10 @@ bot = BotCheckBot()
 async def on_ready():
     logger.info(f"ログイン完了: {bot.user} (ID: {bot.user.id})")
     logger.info(f"サーバー数: {len(bot.guilds)}")
+    # グローバルコマンドをクリア（古いキャッシュ対策）
+    bot.tree.clear_commands(guild=None)
+    await bot.tree.sync()
+    logger.info("グローバルコマンドクリア完了")
     # ギルドごとにコマンド同期（即時反映）
     for guild in bot.guilds:
         bot.tree.copy_global_to(guild=guild)
