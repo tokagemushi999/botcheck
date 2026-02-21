@@ -153,6 +153,151 @@ async def on_message_edit(before: discord.Message, after: discord.Message):
     await bot.db.commit()
 
 
+@bot.event
+async def on_guild_join(guild: discord.Guild):
+    """ギルド参加時に全チャンネルの過去メッセージを自動スキャン"""
+    logger.info(f"新しいギルドに参加: {guild.name} (ID: {guild.id})")
+
+    # システムチャンネルを探す
+    system_channel = guild.system_channel
+    progress_channel = system_channel if system_channel and system_channel.permissions_for(guild.me).send_messages else None
+    
+    if progress_channel:
+        try:
+            embed = discord.Embed(
+                title="🤖 BotCheck へようこそ！",
+                description="このサーバーの過去メッセージを分析中です...",
+                color=discord.Color.blurple()
+            )
+            embed.add_field(name="進捗", value="📊 スキャン開始", inline=False)
+            progress_msg = await progress_channel.send(embed=embed)
+        except Exception as e:
+            logger.warning(f"進捗メッセージ送信失敗: {e}")
+            progress_msg = None
+    else:
+        progress_msg = None
+
+    total_messages = 0
+    total_users = set()
+    scanned_channels = 0
+    
+    try:
+        # 全テキストチャンネルをスキャン
+        for channel in guild.text_channels:
+            # Botに読み取り権限があるかチェック
+            if not channel.permissions_for(guild.me).read_message_history:
+                logger.info(f"チャンネル {channel.name} は権限不足でスキップ")
+                continue
+
+            channel_count = await _scan_guild_channel(channel, guild.id, bot.db)
+            total_messages += channel_count
+            scanned_channels += 1
+            
+            # 50チャンネルごとに進捗更新
+            if progress_msg and scanned_channels % 5 == 0:
+                try:
+                    embed = discord.Embed(
+                        title="🤖 BotCheck セットアップ中",
+                        description=f"チャンネルを分析しています...",
+                        color=discord.Color.blurple()
+                    )
+                    embed.add_field(
+                        name="進捗", 
+                        value=f"📊 {scanned_channels} チャンネル完了\n📨 {total_messages} メッセージ収集", 
+                        inline=False
+                    )
+                    await progress_msg.edit(embed=embed)
+                except Exception as e:
+                    logger.warning(f"進捗更新失敗: {e}")
+
+        logger.info(f"ギルド {guild.name} のスキャン完了: {total_messages}件のメッセージ, {scanned_channels}チャンネル")
+
+        # 完了通知
+        if progress_msg:
+            try:
+                embed = discord.Embed(
+                    title="✅ BotCheck セットアップ完了！",
+                    description="このサーバーの過去メッセージの分析が完了しました。",
+                    color=discord.Color.green()
+                )
+                embed.add_field(
+                    name="結果", 
+                    value=f"📊 **{scanned_channels}** チャンネルをスキャン\n"
+                          f"📨 **{total_messages}** メッセージを収集\n"
+                          f"🔍 `/botcheck` コマンドでユーザー分析が可能です", 
+                    inline=False
+                )
+                embed.set_footer(text="BotCheck は自動でBot/AIアカウントを検知します")
+                await progress_msg.edit(embed=embed)
+            except Exception as e:
+                logger.warning(f"完了通知送信失敗: {e}")
+
+    except Exception as e:
+        logger.error(f"ギルドスキャン中にエラー: {e}", exc_info=True)
+        if progress_msg:
+            try:
+                embed = discord.Embed(
+                    title="⚠️ スキャンでエラーが発生",
+                    description=f"一部のチャンネルをスキップしました: {str(e)[:200]}",
+                    color=discord.Color.orange()
+                )
+                embed.add_field(name="収集済み", value=f"{total_messages} メッセージ", inline=False)
+                await progress_msg.edit(embed=embed)
+            except Exception:
+                pass
+
+
+async def _scan_guild_channel(channel: discord.TextChannel, guild_id: str, db: aiosqlite.Connection, limit: int = 500) -> int:
+    """指定チャンネルの過去メッセージをDBに取り込み（on_guild_join用）"""
+    count = 0
+    now = int(time.time())
+    
+    try:
+        async for message in channel.history(limit=limit):
+            if message.author.bot:
+                continue
+
+            user = message.author
+
+            # ユーザー upsert
+            await db.execute(
+                """INSERT INTO users (id, guild_id, username, display_name, is_bot, first_seen_at, last_seen_at)
+                   VALUES (?, ?, ?, ?, 0, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       username = excluded.username,
+                       display_name = excluded.display_name,
+                       last_seen_at = MAX(excluded.last_seen_at, users.last_seen_at),
+                       updated_at = ?""",
+                (str(user.id), guild_id, user.name, user.display_name,
+                 int(message.created_at.timestamp()), int(message.created_at.timestamp()), now),
+            )
+
+            # メッセージ保存
+            emoji_count = len([c for c in message.content if ord(c) > 0x1F300])
+            await db.execute(
+                """INSERT OR IGNORE INTO messages
+                   (id, guild_id, channel_id, user_id, content, content_length,
+                    mention_count, emoji_count, attachment_count, reaction_count,
+                    is_reply, is_edited, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (str(message.id), guild_id, str(channel.id), str(user.id),
+                 message.content[:2000], len(message.content),
+                 len(message.mentions), emoji_count, len(message.attachments),
+                 sum(r.count for r in message.reactions) if message.reactions else 0,
+                 1 if message.reference else 0,
+                 1 if message.edited_at else 0,
+                 int(message.created_at.timestamp())),
+            )
+            count += 1
+
+        await db.commit()
+        
+    except Exception as e:
+        logger.warning(f"チャンネル {channel.name} のスキャン中にエラー: {e}")
+    
+    return count
+
+
 # ---------------------------------------------------------------------------
 # スラッシュコマンド
 # ---------------------------------------------------------------------------
