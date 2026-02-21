@@ -1,0 +1,5 @@
+
+name: botcheck
+description: Bot detection skill
+triggers:
+  - discord_message
