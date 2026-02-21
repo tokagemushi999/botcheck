@@ -55,7 +55,6 @@ class BotCheckBot(commands.Bot):
         await self.db.commit()
 
         await self.add_cog(BotCheckCog(self))
-        logger.info("コマンド同期完了")
 
     async def close(self):
         if self.db:
