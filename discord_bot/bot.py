@@ -7,6 +7,7 @@ import logging
 import os
 import time
 from pathlib import Path
+from typing import Optional
 
 import aiosqlite
 import discord
@@ -39,7 +40,7 @@ intents.members = True
 class BotCheckBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
-        self.db: aiosqlite.Connection | None = None
+        self.db: Optional[aiosqlite.Connection] = None
 
     async def setup_hook(self):
         """起動時にDB接続 & コマンド同期"""
@@ -175,7 +176,7 @@ class BotCheckCog(commands.Cog):
         self,
         interaction: discord.Interaction,
         action: str = "user",
-        user: discord.Member | None = None,
+        user: Optional[discord.Member] = None,
     ):
         if action == "user":
             await self._analyze_user(interaction, user or interaction.user)

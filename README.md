@@ -16,7 +16,7 @@ Discordサーバーに導入できるBot/AI投稿検知ツール。
 
 ```bash
 # 1. クローン & 依存インストール
-git clone https://github.com/your-repo/botcheck.git
+git clone https://github.com/tokagemushi999/botcheck.git
 cd botcheck
 pip install -r requirements.txt
 
@@ -108,7 +108,7 @@ botcheck/
 
 ## 技術スタック
 
-- **Python 3.11+**
+- **Python 3.9+**
 - **discord.py** — Discord Bot
 - **FastAPI + uvicorn** — REST API
 - **SQLite (aiosqlite)** — データストア
