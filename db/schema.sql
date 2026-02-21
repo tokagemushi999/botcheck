@@ -74,9 +74,23 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
 );
 
+-- サブスクリプション管理
+CREATE TABLE IF NOT EXISTS subscriptions (
+    guild_id TEXT PRIMARY KEY,
+    plan TEXT NOT NULL DEFAULT 'free' CHECK (plan IN ('free', 'pro')),
+    stripe_customer_id TEXT,
+    stripe_subscription_id TEXT,
+    expires_at INTEGER,
+    vote_bonus_expires_at INTEGER, -- top.gg投票ボーナス用
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_users_guild_last_seen ON users (guild_id, last_seen_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_user_created ON messages (user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_guild_created ON messages (guild_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_scores_user_analyzed ON scores (user_id, analyzed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_scores_guild_analyzed ON scores (guild_id, analyzed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_alerts_status_created ON alerts (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_expires ON subscriptions (expires_at);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_plan ON subscriptions (plan);
