@@ -55,7 +55,6 @@ class BotCheckBot(commands.Bot):
         await self.db.commit()
 
         await self.add_cog(BotCheckCog(self))
-        await self.tree.sync()
         logger.info("コマンド同期完了")
 
     async def close(self):
@@ -74,6 +73,11 @@ bot = BotCheckBot()
 async def on_ready():
     logger.info(f"ログイン完了: {bot.user} (ID: {bot.user.id})")
     logger.info(f"サーバー数: {len(bot.guilds)}")
+    # ギルドごとにコマンド同期（即時反映）
+    for guild in bot.guilds:
+        bot.tree.copy_global_to(guild=guild)
+        await bot.tree.sync(guild=guild)
+        logger.info(f"コマンド同期: {guild.name}")
 
 
 @bot.event
@@ -171,6 +175,7 @@ class BotCheckCog(commands.Cog):
         app_commands.Choice(name="サーバー全体", value="server"),
         app_commands.Choice(name="監視ON/OFF", value="watch"),
         app_commands.Choice(name="週次レポート", value="report"),
+        app_commands.Choice(name="過去メッセージ取込", value="scan"),
     ])
     async def botcheck(
         self,
@@ -186,6 +191,8 @@ class BotCheckCog(commands.Cog):
             await self._toggle_watch(interaction)
         elif action == "report":
             await self._weekly_report(interaction)
+        elif action == "scan":
+            await self._scan_channel(interaction)
 
     async def _analyze_user(self, interaction: discord.Interaction, member: discord.Member | discord.User):
         """特定ユーザーのBot度スコアを表示"""
@@ -272,6 +279,67 @@ class BotCheckCog(commands.Cog):
         # アラート判定
         if result.total_score >= ALERT_THRESHOLD and interaction.guild:
             await self._send_alert(interaction.guild, member, result.total_score)
+
+    async def _scan_channel(self, interaction: discord.Interaction):
+        """チャンネルの過去メッセージを一括取り込み"""
+        await interaction.response.defer(thinking=True)
+
+        channel = interaction.channel
+        if not channel or not hasattr(channel, 'history'):
+            await interaction.followup.send("❌ このチャンネルではスキャンできません")
+            return
+
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        count = 0
+        user_set = set()
+        now = int(time.time())
+
+        async for message in channel.history(limit=1000):
+            if message.author.bot:
+                continue
+
+            user = message.author
+            user_set.add(user.id)
+
+            # ユーザー upsert
+            await self.db.execute(
+                """INSERT INTO users (id, guild_id, username, display_name, is_bot, first_seen_at, last_seen_at)
+                   VALUES (?, ?, ?, ?, 0, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       username = excluded.username,
+                       display_name = excluded.display_name,
+                       last_seen_at = MAX(excluded.last_seen_at, users.last_seen_at),
+                       updated_at = ?""",
+                (str(user.id), guild_id, user.name, user.display_name,
+                 int(message.created_at.timestamp()), int(message.created_at.timestamp()), now),
+            )
+
+            # メッセージ保存
+            emoji_count = len([c for c in message.content if ord(c) > 0x1F300])
+            await self.db.execute(
+                """INSERT OR IGNORE INTO messages
+                   (id, guild_id, channel_id, user_id, content, content_length,
+                    mention_count, emoji_count, attachment_count, reaction_count,
+                    is_reply, is_edited, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (str(message.id), guild_id, str(channel.id), str(user.id),
+                 message.content[:2000], len(message.content),
+                 len(message.mentions), emoji_count, len(message.attachments),
+                 sum(r.count for r in message.reactions) if message.reactions else 0,
+                 1 if message.reference else 0,
+                 1 if message.edited_at else 0,
+                 int(message.created_at.timestamp())),
+            )
+            count += 1
+
+        await self.db.commit()
+
+        await interaction.followup.send(
+            f"✅ スキャン完了！\n"
+            f"📨 **{count}** 件のメッセージを取り込みました\n"
+            f"👤 **{len(user_set)}** 人のユーザーを検出\n"
+            f"📢 チャンネル: #{channel.name}"
+        )
 
     async def _server_summary(self, interaction: discord.Interaction):
         """サーバー全体のサマリー"""
