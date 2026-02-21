@@ -65,9 +65,7 @@ Discordサーバーに導入できるBot/AI投稿検知ツール。
 ```
 botcheck/
 ├── discord_bot/
-│   ├── bot.js          — メインBot
-│   ├── commands/       — スラッシュコマンド
-│   └── collectors/     — メッセージ収集
+│   └── bot.py          — メインBot（コマンド + メッセージ収集）
 ├── analyzer/
 │   ├── engine.py       — スコア算出メイン
 │   ├── timing.py       — タイミング分析
@@ -79,8 +77,13 @@ botcheck/
 ├── db/
 │   └── schema.sql      — SQLite
 ├── openclaw_skill/     — OpenClawスキル
-├── tests/
-└── package.json
+├── tests/              — pytest テストスイート
+├── data/               — SQLite DBファイル（自動生成）
+├── deploy/             — デプロイ設定
+│   ├── systemd/        — systemdサービス
+│   └── docker/         — Docker設定
+├── requirements.txt    — Python依存関係
+└── .env.example
 ```
 
 ## 将来的な収益化

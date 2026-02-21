@@ -6,12 +6,15 @@ import os
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, Dict, List
 
 import aiosqlite
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from analyzer.engine import analyze_messages
 
@@ -21,10 +24,14 @@ from analyzer.engine import analyze_messages
 DB_PATH = os.getenv("BOTCHECK_DB", str(Path(__file__).resolve().parent.parent / "data" / "botcheck.db"))
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
 
+# レート制限設定
+limiter = Limiter(key_func=get_remote_address)
+RATE_LIMIT = "60/minute"  # 60リクエスト/分
+
 # ---------------------------------------------------------------------------
 # DB ヘルパー
 # ---------------------------------------------------------------------------
-_db: aiosqlite.Connection | None = None
+_db: Optional[aiosqlite.Connection] = None
 
 
 async def get_db() -> aiosqlite.Connection:
@@ -68,6 +75,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# レート制限の設定
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -82,22 +93,22 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 class MessageInput(BaseModel):
     content: str = ""
-    created_at: int | None = None
-    channel_id: str | None = None
-    user_id: str | None = None
+    created_at: Optional[int] = None
+    channel_id: Optional[str] = None
+    user_id: Optional[str] = None
     is_reply: bool = False
     is_edited: bool = False
     mention_count: int = 0
     emoji_count: int = 0
     reaction_count: int = 0
-    reply_delay_seconds: float | None = None
+    reply_delay_seconds: Optional[float] = None
 
 
 class AnalyzeRequest(BaseModel):
-    messages: list[dict[str, Any]]
-    weights: dict[str, float] | None = None
-    guild_id: str | None = None
-    user_id: str | None = None
+    messages: List[Dict[str, Any]]
+    weights: Optional[Dict[str, float]] = None
+    guild_id: Optional[str] = None
+    user_id: Optional[str] = None
 
 
 class ScoreResponse(BaseModel):
@@ -108,7 +119,7 @@ class ScoreResponse(BaseModel):
     ai_score: float
     confidence: float
     message_count: int
-    details: dict[str, Any] = Field(default_factory=dict)
+    details: Dict[str, Any] = Field(default_factory=dict)
 
 
 class UserScoreRow(BaseModel):
@@ -126,8 +137,8 @@ class StatsResponse(BaseModel):
     total_users: int
     total_messages: int
     total_analyses: int
-    avg_score: float | None
-    top_suspicious: list[dict[str, Any]]
+    avg_score: Optional[float]
+    top_suspicious: List[Dict[str, Any]]
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +152,8 @@ async def health():
 
 
 @app.post("/analyze", response_model=ScoreResponse)
-async def analyze(req: AnalyzeRequest):
+@limiter.limit(RATE_LIMIT)
+async def analyze(request: Request, req: AnalyzeRequest):
     """メッセージ配列を受け取りBot度スコアを返却"""
     if not req.messages:
         raise HTTPException(status_code=400, detail="messages は空にできません")

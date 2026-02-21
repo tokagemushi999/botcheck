@@ -1,0 +1,46 @@
+# botcheck-bot.service - BotCheck Discord Bot 用 systemd サービス
+[Unit]
+Description=BotCheck Discord Bot
+Documentation=https://github.com/your-repo/botcheck
+After=network.target botcheck-api.service
+Wants=network.target
+Requires=botcheck-api.service
+
+[Service]
+Type=exec
+User=botcheck
+Group=botcheck
+WorkingDirectory=/opt/botcheck
+Environment=PYTHONPATH=/opt/botcheck
+Environment=BOTCHECK_DB=/opt/botcheck/data/botcheck.db
+Environment=BOTCHECK_API_URL=http://localhost:8000
+EnvironmentFile=/opt/botcheck/.env
+ExecStart=/opt/botcheck/venv/bin/python -m discord_bot.bot
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=mixed
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=15
+
+# セキュリティ設定
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/botcheck/data /opt/botcheck/logs
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+# リソース制限
+LimitNOFILE=65536
+MemoryMax=256M
+CPUQuota=100%
+
+# ログ設定
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=botcheck-bot
+
+[Install]
+WantedBy=multi-user.target

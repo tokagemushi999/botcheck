@@ -1,142 +1,165 @@
-"""Main scoring engine for BotCheck."""
+"""BotCheck Analysis Engine — クラスベース統合エンジン"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
-from analyzer.ai_detect import analyze_ai
-from analyzer.behavior import analyze_behavior
-from analyzer.style import analyze_style
-from analyzer.timing import analyze_timing
+from analyzer.timing import TimingAnalyzer
+from analyzer.style import StyleAnalyzer
+from analyzer.behavior import BehaviorAnalyzer
+from analyzer.ai_detect import AIDetector
 
 
-DEFAULT_WEIGHTS = {
-    "timing": 0.25,
-    "style": 0.25,
-    "behavior": 0.25,
-    "ai": 0.25,
-}
+class AnalysisEngine:
+    """4軸分析を統合するメインエンジン"""
 
-
-@dataclass
-class EngineResult:
-    total_score: float
-    timing_score: float
-    style_score: float
-    behavior_score: float
-    ai_score: float
-    confidence: float
-    message_count: int
-    details: dict[str, Any]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "total_score": self.total_score,
-            "timing_score": self.timing_score,
-            "style_score": self.style_score,
-            "behavior_score": self.behavior_score,
-            "ai_score": self.ai_score,
-            "confidence": self.confidence,
-            "message_count": self.message_count,
-            "details": self.details,
+    def __init__(self, weights: dict[str, float] | None = None):
+        self.timing_analyzer = TimingAnalyzer()
+        self.style_analyzer = StyleAnalyzer()
+        self.behavior_analyzer = BehaviorAnalyzer()
+        self.ai_detector = AIDetector()
+        self.weights = weights or {
+            "timing": 0.25,
+            "style": 0.25,
+            "behavior": 0.25,
+            "ai": 0.25,
         }
 
+    def analyze_user(self, messages: list[Any]) -> dict[str, Any]:
+        """ユーザーのメッセージを分析してスコアを返す"""
+        count = len(messages)
 
-def _clamp(value: float, low: float = 0.0, high: float = 100.0) -> float:
-    return max(low, min(high, value))
+        if count == 0:
+            return self._empty_result()
+
+        # 各軸の分析
+        timing_score = self.timing_analyzer.analyze_timing(messages)
+        style_score = self.style_analyzer.analyze_style(messages)
+        behavior_score = self.behavior_analyzer.analyze_behavior(messages)
+        ai_score = self.ai_detector.detect_ai_text(messages)
+
+        # 重み付き合計
+        w = self.weights
+        total = sum(w.values())
+        if total <= 0:
+            total = 1.0
+
+        total_score = (
+            timing_score * w.get("timing", 0.25)
+            + style_score * w.get("style", 0.25)
+            + behavior_score * w.get("behavior", 0.25)
+            + ai_score * w.get("ai", 0.25)
+        ) / total
+
+        total_score = _clamp(total_score)
+
+        # 信頼度: メッセージ数に基づく信頼度計算
+        # 20件で80%、50件で90%、100件以上で100%
+        if count >= 100:
+            confidence = 100.0
+        elif count >= 50:
+            confidence = 90.0 + (count - 50) * 0.2  # 90% to 100%
+        elif count >= 20:
+            confidence = 80.0 + (count - 20) * (10.0 / 30)  # 80% to 90%
+        else:
+            confidence = count * 4.0  # Linear scale up to 80%
+        
+        confidence = _clamp(confidence, 0.0, 100.0)
+
+        # メタデータ
+        user_id = self._extract_user_id(messages)
+        timestamps = self._extract_timestamps(messages)
+        period_hours = 0.0
+        if len(timestamps) >= 2:
+            period_hours = (max(timestamps) - min(timestamps)).total_seconds() / 3600.0
+
+        return {
+            "total_score": round(total_score, 2),
+            "timing_score": round(timing_score, 2),
+            "style_score": round(style_score, 2),
+            "behavior_score": round(behavior_score, 2),
+            "ai_score": round(ai_score, 2),
+            "confidence": round(confidence, 2),
+            "message_count": count,
+            "user_id": user_id,
+            "analysis_date": datetime.now(),
+            "analysis_period_hours": round(period_hours, 2),
+        }
+
+    def _empty_result(self) -> dict[str, Any]:
+        return {
+            "total_score": 50,
+            "timing_score": 50,
+            "style_score": 50,
+            "behavior_score": 50,
+            "ai_score": 50,
+            "confidence": 0,
+            "message_count": 0,
+            "user_id": None,
+            "analysis_date": datetime.now(),
+            "analysis_period_hours": 0,
+        }
+
+    def _extract_user_id(self, messages: list[Any]) -> Any:
+        for msg in messages:
+            if hasattr(msg, "author_id"):
+                return msg.author_id
+            if isinstance(msg, dict) and "user_id" in msg:
+                return msg["user_id"]
+        return None
+
+    def _extract_timestamps(self, messages: list[Any]) -> list[datetime]:
+        timestamps = []
+        for msg in messages:
+            if hasattr(msg, "created_at") and msg.created_at is not None:
+                ts = msg.created_at
+                if isinstance(ts, datetime):
+                    timestamps.append(ts)
+            elif isinstance(msg, dict) and "created_at" in msg:
+                ts = msg["created_at"]
+                if isinstance(ts, datetime):
+                    timestamps.append(ts)
+        return timestamps
 
 
-def _normalize_weights(weights: dict[str, float] | None) -> dict[str, float]:
-    merged = dict(DEFAULT_WEIGHTS)
-    if weights:
-        for key, value in weights.items():
-            if key in merged and isinstance(value, (int, float)) and value >= 0:
-                merged[key] = float(value)
+# ---- 後方互換用 ----
 
-    total = sum(merged.values())
-    if total <= 0:
-        return dict(DEFAULT_WEIGHTS)
+class EngineResult:
+    """後方互換用のデータクラス"""
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
 
-    return {key: value / total for key, value in merged.items()}
-
-
-def _validate_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    valid_messages: list[dict[str, Any]] = []
-    for msg in messages:
-        if not isinstance(msg, dict):
-            continue
-        if "content" not in msg:
-            msg = {**msg, "content": ""}
-        valid_messages.append(msg)
-
-    return valid_messages
+    def to_dict(self) -> dict[str, Any]:
+        return {k: v for k, v in self.__dict__.items()}
 
 
 def analyze_messages(messages: list[dict[str, Any]], weights: dict[str, float] | None = None) -> EngineResult:
-    """Analyze messages and return bot-likelihood score (0-100)."""
-    valid_messages = _validate_messages(messages)
-    count = len(valid_messages)
-
-    if count == 0:
-        empty = {
-            "timing": {"score": 0.0, "details": {}},
-            "style": {"score": 0.0, "details": {}},
-            "behavior": {"score": 0.0, "details": {}},
-            "ai": {"score": 0.0, "details": {}},
-        }
-        return EngineResult(
-            total_score=0.0,
-            timing_score=0.0,
-            style_score=0.0,
-            behavior_score=0.0,
-            ai_score=0.0,
-            confidence=0.0,
-            message_count=0,
-            details=empty,
-        )
-
-    timing = analyze_timing(valid_messages)
-    style = analyze_style(valid_messages)
-    behavior = analyze_behavior(valid_messages)
-    ai = analyze_ai(valid_messages)
-
-    normalized = _normalize_weights(weights)
-    total = _clamp(
-        timing["score"] * normalized["timing"]
-        + style["score"] * normalized["style"]
-        + behavior["score"] * normalized["behavior"]
-        + ai["score"] * normalized["ai"]
-    )
-
-    # 100件で信頼度100に漸近
-    confidence = _clamp((count / 100.0) * 100.0)
-
-    details = {
-        "timing": timing,
-        "style": style,
-        "behavior": behavior,
-        "ai": ai,
-        "weights": normalized,
-    }
-
+    """後方互換: dict形式メッセージを分析"""
+    engine = AnalysisEngine(weights=weights)
+    result = engine.analyze_user(messages)
     return EngineResult(
-        total_score=round(total, 2),
-        timing_score=round(timing["score"], 2),
-        style_score=round(style["score"], 2),
-        behavior_score=round(behavior["score"], 2),
-        ai_score=round(ai["score"], 2),
-        confidence=round(confidence, 2),
-        message_count=count,
-        details=details,
+        total_score=result["total_score"],
+        timing_score=result["timing_score"],
+        style_score=result["style_score"],
+        behavior_score=result["behavior_score"],
+        ai_score=result["ai_score"],
+        confidence=result["confidence"],
+        message_count=result["message_count"],
+        details={},
     )
 
 
 def compute_score(features: dict[str, Any]) -> float:
-    """Backward-compatible helper."""
+    """後方互換ヘルパー"""
     if not isinstance(features, dict):
         return 0.0
-    numeric_values = [float(v) for v in features.values() if isinstance(v, (int, float))]
-    if not numeric_values:
+    numeric = [float(v) for v in features.values() if isinstance(v, (int, float))]
+    if not numeric:
         return 0.0
-    return round(_clamp(sum(numeric_values)), 2)
+    return round(_clamp(sum(numeric)), 2)
+
+
+def _clamp(value: float, low: float = 0.0, high: float = 100.0) -> float:
+    return max(low, min(high, value))

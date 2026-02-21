@@ -1,0 +1,80 @@
+# docker-compose.yml - API + Bot サービス分離、data/ ボリュームマウント
+version: '3.8'
+
+services:
+  # BotCheck API サーバー
+  botcheck-api:
+    build: .
+    container_name: botcheck-api
+    command: api
+    ports:
+      - "8000:8000"
+    environment:
+      - BOTCHECK_DB=/app/data/botcheck.db
+      - PYTHONPATH=/app
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - botcheck-network
+
+  # Discord Bot
+  botcheck-bot:
+    build: .
+    container_name: botcheck-bot
+    command: bot
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - BOTCHECK_DB=/app/data/botcheck.db
+      - BOTCHECK_API_URL=http://botcheck-api:8000
+      - PYTHONPATH=/app
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      botcheck-api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - botcheck-network
+
+  # 開発用：単一コンテナ（API + Bot 両方）
+  botcheck-all:
+    build: .
+    container_name: botcheck-all
+    command: all
+    ports:
+      - "8000:8000"
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - BOTCHECK_DB=/app/data/botcheck.db
+      - PYTHONPATH=/app
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - botcheck-network
+    profiles:
+      - dev
+
+networks:
+  botcheck-network:
+    driver: bridge
+
+volumes:
+  botcheck-data:
+    driver: local

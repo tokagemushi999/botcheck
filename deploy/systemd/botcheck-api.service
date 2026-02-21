@@ -1,0 +1,44 @@
+# botcheck-api.service - BotCheck API サーバー用 systemd サービス
+[Unit]
+Description=BotCheck API Server
+Documentation=https://github.com/your-repo/botcheck
+After=network.target
+Wants=network.target
+
+[Service]
+Type=exec
+User=botcheck
+Group=botcheck
+WorkingDirectory=/opt/botcheck
+Environment=PYTHONPATH=/opt/botcheck
+Environment=BOTCHECK_DB=/opt/botcheck/data/botcheck.db
+Environment=PORT=8000
+ExecStart=/opt/botcheck/venv/bin/uvicorn api.server:app --host 0.0.0.0 --port 8000 --workers 2
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=mixed
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=10
+
+# セキュリティ設定
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/botcheck/data /opt/botcheck/logs
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+# リソース制限
+LimitNOFILE=65536
+MemoryMax=512M
+CPUQuota=200%
+
+# ログ設定
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=botcheck-api
+
+[Install]
+WantedBy=multi-user.target
