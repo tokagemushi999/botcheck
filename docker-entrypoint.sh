@@ -1,12 +1,9 @@
 #!/bin/bash
-# docker-entrypoint.sh - Docker起動スクリプト
-
 set -e
 
 # データベース初期化
-init_database() {
-    echo "Initializing database..."
-    python -c "
+echo "Initializing database..."
+python -c "
 import asyncio
 from api.server import init_db
 async def main():
@@ -15,26 +12,30 @@ async def main():
     print('Database initialized successfully')
 asyncio.run(main())
 "
-}
 
 echo "Starting BotCheck API + Discord Bot..."
-
-init_database
 
 # バックグラウンドでAPI起動
 uvicorn api.server:app --host 0.0.0.0 --port 8000 --workers 1 &
 API_PID=$!
+echo "API started (PID: $API_PID)"
 
 # SIGTERM/SIGINTをトラップ
-trap "echo 'Shutting down...'; kill $API_PID 2>/dev/null; exit 0" SIGTERM SIGINT
+cleanup() {
+    echo "Received signal, shutting down..."
+    kill $API_PID 2>/dev/null || true
+    exit 0
+}
+trap cleanup SIGTERM SIGINT
 
 if [ -z "$DISCORD_TOKEN" ]; then
     echo "DISCORD_TOKEN not set. Running API only."
     wait $API_PID
 else
-    # Botをフォアグラウンドで実行（これがメインプロセスになる）
+    echo "Starting Discord bot in foreground..."
     python -m discord_bot.bot
-    # Botが終了したらAPIも停止
-    echo "Bot process exited. Stopping API..."
+    BOT_EXIT=$?
+    echo "Bot process exited with code: $BOT_EXIT"
     kill $API_PID 2>/dev/null || true
+    exit $BOT_EXIT
 fi

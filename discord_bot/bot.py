@@ -500,7 +500,13 @@ def main():
     if not TOKEN:
         logger.error("DISCORD_TOKEN が設定されていません。.env ファイルを確認してください。")
         return
-    bot.run(TOKEN)
+    try:
+        logger.info("Bot starting with bot.run()...")
+        bot.run(TOKEN)
+        logger.info("bot.run() returned normally")
+    except Exception as e:
+        logger.error(f"bot.run() raised exception: {e}", exc_info=True)
+        raise
 
 
 if __name__ == "__main__":
