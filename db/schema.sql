@@ -94,3 +94,18 @@ CREATE INDEX IF NOT EXISTS idx_scores_guild_analyzed ON scores (guild_id, analyz
 CREATE INDEX IF NOT EXISTS idx_alerts_status_created ON alerts (status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_expires ON subscriptions (expires_at);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_plan ON subscriptions (plan);
+
+-- APIキー管理
+CREATE TABLE IF NOT EXISTS api_keys (
+    key TEXT PRIMARY KEY,
+    guild_id TEXT NOT NULL,
+    plan TEXT NOT NULL DEFAULT 'free' CHECK (plan IN ('free', 'pro')),
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    last_used_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_keys_guild ON api_keys (guild_id);
+
+-- auto_scan_enabled カラム追加（既存settingsテーブル）
+-- SQLiteはALTER TABLE ADD COLUMNでデフォルト値付きなら安全
+-- ただしIF NOT EXISTSがないので、アプリ側で処理する

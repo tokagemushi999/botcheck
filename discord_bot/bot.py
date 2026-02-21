@@ -7,7 +7,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import aiosqlite
 import discord
@@ -81,7 +81,7 @@ bot = BotCheckBot()
 # ---------------------------------------------------------------------------
 # プラン管理ヘルパー関数
 # ---------------------------------------------------------------------------
-async def check_plan(guild_id: str, db: aiosqlite.Connection) -> tuple[str, dict]:
+async def check_plan(guild_id: str, db: aiosqlite.Connection) -> Tuple[str, dict]:
     """
     ギルドのプラン情報を取得
     Returns: (plan_name, limits_dict)
@@ -258,6 +258,93 @@ async def on_message(message: discord.Message):
     await db.commit()
 
     await bot.process_commands(message)
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    """新メンバー参加時の自動スキャン"""
+    if member.bot or not bot.db:
+        return
+
+    guild_id = str(member.guild.id)
+    db = bot.db
+
+    # auto_scan_enabled チェック
+    try:
+        row = await db.execute_fetchall(
+            "SELECT auto_scan_enabled FROM settings WHERE guild_id = ?", (guild_id,)
+        )
+        if not row or not row[0][0]:
+            return
+    except Exception:
+        return
+
+    logger.info(f"Auto-scan triggered for new member {member.name} in {member.guild.name}")
+
+    # 30秒待機（メッセージが投稿される時間を確保）
+    await asyncio.sleep(30)
+
+    # 過去メッセージを取得
+    rows = await db.execute_fetchall(
+        """SELECT content, content_length, mention_count, emoji_count,
+                  reaction_count, is_reply, is_edited, created_at, channel_id
+           FROM messages WHERE user_id = ? AND guild_id = ?
+           ORDER BY created_at DESC LIMIT 200""",
+        (str(member.id), guild_id),
+    )
+
+    if len(rows) < 5:
+        return  # メッセージ不足
+
+    messages = [
+        {
+            "content": r[0], "content_length": r[1], "mention_count": r[2],
+            "emoji_count": r[3], "reaction_count": r[4], "is_reply": bool(r[5]),
+            "is_edited": bool(r[6]), "created_at": r[7], "channel_id": r[8],
+        }
+        for r in rows
+    ]
+
+    from analyzer.engine import analyze_messages
+    result = analyze_messages(messages)
+
+    # スコア保存
+    await db.execute(
+        """INSERT INTO scores (guild_id, user_id, total_score, timing_score,
+           style_score, behavior_score, ai_score, sample_size)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (guild_id, str(member.id), result.total_score, result.timing_score,
+         result.style_score, result.behavior_score, result.ai_score,
+         result.message_count),
+    )
+    await db.commit()
+
+    # 閾値超えたらアラート
+    if result.total_score >= ALERT_THRESHOLD:
+        # システムチャンネルにアラート送信
+        channel = member.guild.system_channel
+        if channel and channel.permissions_for(member.guild.me).send_messages:
+            embed = discord.Embed(
+                title="🚨 BotCheck 自動スキャンアラート",
+                description=f"新メンバー **{member.display_name}** のBot度が高いです",
+                color=discord.Color.red(),
+            )
+            embed.add_field(name="Bot度スコア", value=f"**{result.total_score}** / 100", inline=True)
+            embed.add_field(name="分析メッセージ数", value=f"{result.message_count} 件", inline=True)
+            embed.set_footer(text="自動スキャンによる検知 | /botcheck autoscan で設定変更")
+            try:
+                await channel.send(embed=embed)
+            except Exception as e:
+                logger.warning(f"Auto-scan alert send failed: {e}")
+
+        # アラートDB記録
+        await db.execute(
+            """INSERT INTO alerts (guild_id, user_id, threshold, status, message)
+               VALUES (?, ?, ?, 'sent', ?)""",
+            (guild_id, str(member.id), ALERT_THRESHOLD,
+             f"Auto-scan: Score {result.total_score} exceeded threshold {ALERT_THRESHOLD}"),
+        )
+        await db.commit()
 
 
 @bot.event
@@ -474,6 +561,7 @@ class BotCheckCog(commands.Cog):
         app_commands.Choice(name="監視ON/OFF", value="watch"),
         app_commands.Choice(name="週次レポート", value="report"),
         app_commands.Choice(name="過去メッセージ取込", value="scan"),
+        app_commands.Choice(name="自動スキャンON/OFF", value="autoscan"),
     ])
     async def botcheck(
         self,
@@ -491,6 +579,8 @@ class BotCheckCog(commands.Cog):
             await self._weekly_report(interaction)
         elif action == "scan":
             await self._scan_channel(interaction)
+        elif action == "autoscan":
+            await self._toggle_autoscan(interaction)
 
     async def _analyze_user(self, interaction: discord.Interaction, member: discord.Member | discord.User):
         """特定ユーザーのBot度スコアを表示"""
@@ -818,6 +908,34 @@ class BotCheckCog(commands.Cog):
             embed.set_footer(text="💎 Pro")
 
         await interaction.followup.send(embed=embed)
+
+    async def _toggle_autoscan(self, interaction: discord.Interaction):
+        """新メンバー自動スキャンの切り替え"""
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ 管理者権限が必要です", ephemeral=True)
+            return
+
+        guild_id = str(interaction.guild_id)
+
+        # settings行を確保
+        await self.db.execute(
+            "INSERT OR IGNORE INTO settings (guild_id) VALUES (?)", (guild_id,)
+        )
+
+        row = await self.db.execute_fetchall(
+            "SELECT auto_scan_enabled FROM settings WHERE guild_id = ?", (guild_id,)
+        )
+        current = row[0][0] if row else 0
+        new_state = 0 if current else 1
+        await self.db.execute(
+            "UPDATE settings SET auto_scan_enabled = ?, updated_at = ? WHERE guild_id = ?",
+            (new_state, int(time.time()), guild_id),
+        )
+        await self.db.commit()
+
+        state_text = "🟢 ON" if new_state else "🔴 OFF"
+        desc = "新メンバー参加時に自動でBot度を分析し、閾値を超えた場合アラートします。" if new_state else "新メンバーの自動スキャンを無効にしました。"
+        await interaction.response.send_message(f"自動スキャン: {state_text}\n{desc}")
 
     async def _send_alert(self, guild: discord.Guild, member: discord.Member | discord.User, score: float):
         """管理者にアラートDM送信"""

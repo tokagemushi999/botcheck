@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import secrets
 import time
 import logging
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Optional, Dict, List
+from typing import Any, Optional, Dict, List, Tuple
 
 import aiosqlite
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
@@ -53,8 +56,55 @@ async def init_db() -> aiosqlite.Connection:
     await db.execute("PRAGMA foreign_keys=ON")
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
     await db.executescript(schema)
+    # auto_scan_enabled カラムを安全に追加
+    try:
+        await db.execute("ALTER TABLE settings ADD COLUMN auto_scan_enabled INTEGER NOT NULL DEFAULT 0")
+    except Exception:
+        pass  # already exists
     await db.commit()
     return db
+
+
+# ---------------------------------------------------------------------------
+# API Key 認証 & レート制限
+# ---------------------------------------------------------------------------
+_api_key_daily_usage: Dict[str, Dict[str, int]] = defaultdict(lambda: {"count": 0, "date": ""})
+
+API_RATE_LIMITS: Dict[str, int] = {"free": 100, "pro": 10000}
+
+
+async def validate_api_key(x_api_key: Optional[str] = Header(None)) -> Dict[str, Any]:
+    """X-API-Key ヘッダーを検証して key 情報を返す"""
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="Missing X-API-Key header")
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT key, guild_id, plan, created_at, last_used_at FROM api_keys WHERE key = ?",
+        (x_api_key,),
+    )
+    if not rows:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+    r = rows[0]
+    key_info: Dict[str, Any] = {
+        "key": r[0], "guild_id": r[1], "plan": r[2],
+        "created_at": r[3], "last_used_at": r[4],
+    }
+
+    # daily rate limit check
+    today = time.strftime("%Y-%m-%d")
+    usage = _api_key_daily_usage[x_api_key]
+    if usage["date"] != today:
+        usage["date"] = today
+        usage["count"] = 0
+    limit = API_RATE_LIMITS.get(key_info["plan"], 100)
+    if usage["count"] >= limit:
+        raise HTTPException(status_code=429, detail=f"Rate limit exceeded ({limit}/day)")
+    usage["count"] += 1
+
+    # update last_used_at
+    await db.execute("UPDATE api_keys SET last_used_at = ? WHERE key = ?", (int(time.time()), x_api_key))
+    await db.commit()
+    return key_info
 
 
 # ---------------------------------------------------------------------------
@@ -179,12 +229,28 @@ class TopGGVoteWebhook(BaseModel):
 # ---------------------------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
-async def landing_page():
-    """ランディングページ"""
+async def landing_page(request: Request):
+    """ランディングページ（Accept-Language で言語切替）"""
+    accept_lang = request.headers.get("accept-language", "")
+    # 日本語以外は英語版を返す
+    if "ja" not in accept_lang:
+        en_path = Path(__file__).resolve().parent.parent / "static" / "lp" / "en" / "index.html"
+        if en_path.exists():
+            return en_path.read_text(encoding="utf-8")
     lp_path = Path(__file__).resolve().parent.parent / "static" / "lp" / "index.html"
     if lp_path.exists():
         return lp_path.read_text(encoding="utf-8")
     return HTMLResponse("<h1>BotCheck</h1><p>Landing page not found</p>")
+
+
+@app.get("/en", response_class=HTMLResponse)
+@app.get("/en/", response_class=HTMLResponse)
+async def landing_page_en():
+    """英語LP"""
+    en_path = Path(__file__).resolve().parent.parent / "static" / "lp" / "en" / "index.html"
+    if en_path.exists():
+        return en_path.read_text(encoding="utf-8")
+    return HTMLResponse("<h1>BotCheck</h1><p>English landing page not found</p>")
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -453,6 +519,117 @@ async def topgg_webhook(vote_data: TopGGVoteWebhook):
 
 
 # ---------------------------------------------------------------------------
+# Public API v1 (API Key 認証)
+# ---------------------------------------------------------------------------
+
+class V1CheckRequest(BaseModel):
+    messages: List[Dict[str, Any]]
+    weights: Optional[Dict[str, float]] = None
+
+
+class V1CheckResponse(BaseModel):
+    total_score: float
+    timing_score: float
+    style_score: float
+    behavior_score: float
+    ai_score: float
+    confidence: float
+    message_count: int
+
+
+class V1UserScoreResponse(BaseModel):
+    user_id: str
+    total_score: float
+    timing_score: float
+    style_score: float
+    behavior_score: float
+    ai_score: float
+    sample_size: int
+    analyzed_at: int
+
+
+@app.post("/api/v1/check", response_model=V1CheckResponse)
+async def api_v1_check(req: V1CheckRequest, key_info: Dict[str, Any] = Depends(validate_api_key)):
+    """Public API: Analyze messages and return bot-likelihood score."""
+    if not req.messages:
+        raise HTTPException(status_code=400, detail="messages must not be empty")
+    result = analyze_messages(req.messages, req.weights)
+    return V1CheckResponse(
+        total_score=result.total_score,
+        timing_score=result.timing_score,
+        style_score=result.style_score,
+        behavior_score=result.behavior_score,
+        ai_score=result.ai_score,
+        confidence=result.confidence,
+        message_count=result.message_count,
+    )
+
+
+@app.get("/api/v1/user/{user_id}/score", response_model=V1UserScoreResponse)
+async def api_v1_user_score(user_id: str, key_info: Dict[str, Any] = Depends(validate_api_key)):
+    """Public API: Get latest score for a user."""
+    db = await get_db()
+    row = await db.execute_fetchall(
+        """SELECT user_id, total_score, timing_score, style_score, behavior_score,
+                  ai_score, sample_size, analyzed_at
+           FROM scores WHERE user_id = ? ORDER BY analyzed_at DESC LIMIT 1""",
+        (user_id,),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Score not found for this user")
+    r = row[0]
+    return V1UserScoreResponse(
+        user_id=r[0], total_score=r[1], timing_score=r[2], style_score=r[3],
+        behavior_score=r[4], ai_score=r[5], sample_size=r[6], analyzed_at=r[7],
+    )
+
+
+# ---------------------------------------------------------------------------
+# API Key 管理エンドポイント (ダッシュボード用)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/keys/generate")
+async def generate_api_key(guild_id: str, plan: str = "free"):
+    """APIキーを生成"""
+    if plan not in ("free", "pro"):
+        raise HTTPException(status_code=400, detail="Invalid plan")
+    key = "bc_" + secrets.token_hex(24)
+    db = await get_db()
+    await db.execute(
+        "INSERT INTO api_keys (key, guild_id, plan) VALUES (?, ?, ?)",
+        (key, guild_id, plan),
+    )
+    await db.commit()
+    return {"key": key, "guild_id": guild_id, "plan": plan}
+
+
+@app.delete("/api/keys/{api_key}")
+async def revoke_api_key(api_key: str):
+    """APIキーを無効化"""
+    db = await get_db()
+    cursor = await db.execute("DELETE FROM api_keys WHERE key = ?", (api_key,))
+    await db.commit()
+    if cursor.rowcount == 0:
+        raise HTTPException(status_code=404, detail="API key not found")
+    return {"status": "revoked"}
+
+
+@app.get("/api/keys")
+async def list_api_keys(guild_id: str):
+    """ギルドのAPIキー一覧"""
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT key, guild_id, plan, created_at, last_used_at FROM api_keys WHERE guild_id = ?",
+        (guild_id,),
+    )
+    return [
+        {"key": r[0][:8] + "...", "guild_id": r[1], "plan": r[2],
+         "created_at": r[3], "last_used_at": r[4]}
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
 # HTML コンテンツ生成
 # ---------------------------------------------------------------------------
 def get_dashboard_html() -> str:
@@ -631,9 +808,42 @@ def get_dashboard_html() -> str:
                 <canvas id="scoreChart" width="400" height="200"></canvas>
             </div>
 
+            <div class="chart-container" style="margin-bottom:30px;">
+                <h2 class="section-title">フィルター</h2>
+                <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;">
+                    <label style="color:#b0b0b0;font-size:14px;">サーバー:
+                        <select id="guild-select" style="background:#1e1e2e;color:#e5e5e5;border:1px solid rgba(255,255,255,0.2);border-radius:8px;padding:6px 12px;font-size:14px;">
+                            <option value="">全サーバー</option>
+                        </select>
+                    </label>
+                    <label style="color:#b0b0b0;font-size:14px;">期間:
+                        <select id="period-select" style="background:#1e1e2e;color:#e5e5e5;border:1px solid rgba(255,255,255,0.2);border-radius:8px;padding:6px 12px;font-size:14px;">
+                            <option value="7">過去7日</option>
+                            <option value="30" selected>過去30日</option>
+                            <option value="90">過去90日</option>
+                            <option value="">全期間</option>
+                        </select>
+                    </label>
+                    <label style="color:#b0b0b0;font-size:14px;">スコア:
+                        <input id="score-min" type="number" min="0" max="100" value="0" style="width:60px;background:#1e1e2e;color:#e5e5e5;border:1px solid rgba(255,255,255,0.2);border-radius:8px;padding:6px 8px;font-size:14px;">
+                        〜
+                        <input id="score-max" type="number" min="0" max="100" value="100" style="width:60px;background:#1e1e2e;color:#e5e5e5;border:1px solid rgba(255,255,255,0.2);border-radius:8px;padding:6px 8px;font-size:14px;">
+                    </label>
+                </div>
+            </div>
+
             <div class="user-list">
                 <h2 class="section-title">疑わしいユーザー Top10</h2>
                 <div id="suspicious-users"></div>
+            </div>
+
+            <div class="chart-container" style="margin-top:30px;">
+                <h2 class="section-title">🔑 APIキー管理</h2>
+                <div style="margin-bottom:16px;">
+                    <input id="apikey-guild" placeholder="Guild ID" style="background:#1e1e2e;color:#e5e5e5;border:1px solid rgba(255,255,255,0.2);border-radius:8px;padding:8px 12px;font-size:14px;width:200px;">
+                    <button onclick="generateApiKey()" style="background:#667eea;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:14px;cursor:pointer;margin-left:8px;">キー生成</button>
+                </div>
+                <div id="api-keys-list" style="font-size:14px;color:#b0b0b0;"></div>
             </div>
         </div>
     </div>
@@ -769,6 +979,37 @@ def get_dashboard_html() -> str:
                 }
             });
         }
+
+        // APIキー管理
+        async function generateApiKey() {
+            const guildId = document.getElementById('apikey-guild').value;
+            if (!guildId) { alert('Guild IDを入力してください'); return; }
+            const res = await fetch('/api/keys/generate?guild_id=' + guildId, {method:'POST'});
+            const data = await res.json();
+            alert('生成されたキー: ' + data.key);
+            loadApiKeys(guildId);
+        }
+
+        async function loadApiKeys(guildId) {
+            if (!guildId) return;
+            const res = await fetch('/api/keys?guild_id=' + guildId);
+            const keys = await res.json();
+            const container = document.getElementById('api-keys-list');
+            if (keys.length === 0) {
+                container.innerHTML = '<p>APIキーがありません</p>';
+            } else {
+                container.innerHTML = keys.map(k =>
+                    '<div style="padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.1);">' +
+                    '<code>' + k.key + '</code> | ' + k.plan +
+                    ' | 最終使用: ' + (k.last_used_at ? new Date(k.last_used_at*1000).toLocaleString('ja-JP') : '未使用') +
+                    '</div>'
+                ).join('');
+            }
+        }
+
+        document.getElementById('apikey-guild')?.addEventListener('change', function() {
+            loadApiKeys(this.value);
+        });
 
         // ページ読み込み時にダッシュボードを読み込む
         document.addEventListener('DOMContentLoaded', loadDashboard);
